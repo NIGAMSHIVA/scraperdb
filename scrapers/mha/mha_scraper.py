@@ -4,6 +4,9 @@ import zipfile
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
+from storage.raw_store import save_raw_tender
+from storage.pdf_store import save_pdf_metadata
+
 BASE_URL = "https://www.mha.gov.in/en/tenders"
 BASE_DOMAIN = "https://www.mha.gov.in"
 
@@ -17,7 +20,7 @@ HEADERS = {
 
 
 def fetch_mha_tenders():
-    print(" Fetching MHA tenders (with pagination)...")
+    print("🔍 Fetching MHA tenders (with pagination + MongoDB)...")
 
     os.makedirs(PDF_DIR, exist_ok=True)
     os.makedirs(ZIP_DIR, exist_ok=True)
@@ -26,7 +29,7 @@ def fetch_mha_tenders():
     pdf_files = []
 
     while True:
-        print(f"\n Fetching page {page}")
+        print(f"\n➡️ Fetching page {page}")
 
         page_url = f"{BASE_URL}?page={page}"
 
@@ -34,19 +37,19 @@ def fetch_mha_tenders():
             response = requests.get(page_url, headers=HEADERS, timeout=30)
             response.raise_for_status()
         except Exception as e:
-            print(" Page request failed:", e)
+            print("❌ Page request failed:", e)
             break
 
         soup = BeautifulSoup(response.text, "lxml")
 
         table = soup.find("table")
         if not table:
-            print(" No table found. Stopping pagination.")
+            print("⛔ No table found. Stopping pagination.")
             break
 
         rows = table.find("tbody").find_all("tr")
         if not rows:
-            print(" No rows found. End of pages.")
+            print("⛔ No rows found. End of pages.")
             break
 
         for row in rows:
@@ -67,17 +70,38 @@ def fetch_mha_tenders():
             pdf_name = pdf_url.split("/")[-1]
             pdf_path = os.path.join(PDF_DIR, pdf_name)
 
-            # ---- PRINT ----
-            print("\n TENDER FOUND")
+            # ---------------- SAVE RAW TENDER ---------------- #
+            raw_tender = {
+                "source": "MHA",
+                "tender_ref_no": tender_no,
+                "sr_no": sr_no,
+                "title": title,
+                "duration": duration,
+                "pdf_url": pdf_url,
+                "page_no": page
+            }
+            save_raw_tender(raw_tender)
+
+            print("\n📄 TENDER FOUND")
             print("SR NO       :", sr_no)
             print("Tender No   :", tender_no)
             print("Title       :", title)
             print("Duration    :", duration)
             print("PDF URL     :", pdf_url)
 
-            # ---- DOWNLOAD PDF ----
+            # ---------------- DOWNLOAD PDF ---------------- #
             if os.path.exists(pdf_path):
                 print("⏭ Already downloaded:", pdf_name)
+
+                save_pdf_metadata({
+                    "tender_ref_no": tender_no,
+                    "source": "MHA",
+                    "document_name": pdf_name,
+                    "document_type": "MHA_PDF",
+                    "local_path": pdf_path,
+                    "size_kb": round(os.path.getsize(pdf_path) / 1024, 2)
+                })
+
                 pdf_files.append(pdf_path)
                 continue
 
@@ -89,21 +113,32 @@ def fetch_mha_tenders():
                     f.write(pdf_resp.content)
 
                 pdf_files.append(pdf_path)
-                print(" PDF downloaded:", pdf_name)
+
+                # ---------------- SAVE PDF METADATA ---------------- #
+                save_pdf_metadata({
+                    "tender_ref_no": tender_no,
+                    "source": "MHA",
+                    "document_name": pdf_name,
+                    "document_type": "MHA_PDF",
+                    "local_path": pdf_path,
+                    "size_kb": round(os.path.getsize(pdf_path) / 1024, 2)
+                })
+
+                print("✅ PDF downloaded:", pdf_name)
 
             except Exception as e:
-                print(" Failed to download PDF:", e)
+                print("⚠️ Failed to download PDF:", e)
 
         page += 1
 
-    # ---- ZIP ALL PDFs ----
+    # ---------------- ZIP ALL PDFs ---------------- #
     if pdf_files:
         with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zipf:
             for file in set(pdf_files):
                 zipf.write(file, arcname=os.path.basename(file))
 
-        print(f"\n ZIP CREATED: {ZIP_PATH}")
-        print(f" Total PDFs: {len(set(pdf_files))}")
+        print(f"\n📦 ZIP CREATED: {ZIP_PATH}")
+        print(f"📄 Total PDFs: {len(set(pdf_files))}")
 
     else:
         print("⚠️ No PDFs downloaded")

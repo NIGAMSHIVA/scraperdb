@@ -10,7 +10,20 @@ db = client["tender_db"]
 collection = db["tender_documents"]
 
 def save_pdf_metadata(data):
-    collection.insert_one({
-        **data,
-        "downloaded_at": datetime.utcnow()
-    })
+    unique_filter = {
+        "source": data["source"],
+        "tender_ref_no": data["tender_ref_no"],
+    }
+
+    update_data = {
+        "$setOnInsert": {
+            **data,
+            "downloaded_at": datetime.utcnow()
+        }
+    }
+
+    collection.update_one(
+        unique_filter,
+        update_data,
+        upsert=True
+    )
