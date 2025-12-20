@@ -29,13 +29,18 @@ def upsert_pdf_metadata(data):
         ]
     }
 
+    insert_docling_status = data.get("docling_status", "pending")
+    update_payload = {**data}
+    update_payload.pop("docling_status", None)
+
     update_data = {
         "$set": {
-            **data,
+            **update_payload,
             "updated_at": datetime.utcnow()
         },
         "$setOnInsert": {
-            "created_at": datetime.utcnow()
+            "created_at": datetime.utcnow(),
+            "docling_status": insert_docling_status
         }
     }
 
@@ -44,3 +49,4 @@ def upsert_pdf_metadata(data):
         update_data,
         upsert=True
     )
+\

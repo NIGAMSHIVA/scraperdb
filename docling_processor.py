@@ -40,8 +40,13 @@ def process_pending_documents(limit=10):
     Process PDFs that are not yet passed through Docling
     """
 
+    pending_query = {"docling_status": "pending"}
+    if not documents.find_one(pending_query, {"_id": 1}):
+        print("No pending documents to process.")
+        return
+
     pending_docs = documents.find(
-        {"docling_status": "pending"},
+        pending_query,
         limit=limit
     )
 
@@ -49,6 +54,14 @@ def process_pending_documents(limit=10):
         document_id = doc["_id"]
         tender_id = doc["tender_id"]
         pdf_path = doc["local_path"]
+
+        if docling_outputs.find_one({"document_id": document_id}, {"_id": 1}):
+            documents.update_one(
+                {"_id": document_id},
+                {"$set": {"docling_status": "done"}}
+            )
+            print(f"Skipping already processed document: {pdf_path}")
+            continue
 
         print(f"📄 Docling → {pdf_path}")
 
