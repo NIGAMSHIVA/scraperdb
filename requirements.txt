@@ -4,3 +4,4 @@ lxml
 pymongo
 python-dotenv
 playwright
+docling
