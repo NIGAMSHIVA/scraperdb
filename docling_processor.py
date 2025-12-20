@@ -6,7 +6,8 @@ import os
 
 load_dotenv()
 
-client = MongoClient(os.getenv("MONGO_URI"))
+mongo_uri = os.getenv("MONGO_URI") or "mongodb://localhost:27017"
+client = MongoClient(mongo_uri)
 db = client["tender_db"]
 
 documents = db["tender_documents"]
@@ -54,6 +55,7 @@ def process_pending_documents(limit=10):
         try:
             result = converter.convert(pdf_path)
 
+            tables_value = getattr(result.document, "tables", None)
             sections_value = getattr(result.document, "sections", None)
 
             docling_outputs.update_one(
@@ -63,7 +65,7 @@ def process_pending_documents(limit=10):
                         "tender_id": tender_id,
                         "document_id": document_id,
                         "text": result.document.export_to_text(),
-                        "tables": _serialize_docling_value(result.document.tables),
+                        "tables": _serialize_docling_value(tables_value),
                         "sections": _serialize_docling_value(sections_value),
                         "extracted_at": datetime.utcnow(),
                         "docling_version": "v1"

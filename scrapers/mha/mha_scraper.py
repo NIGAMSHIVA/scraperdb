@@ -41,7 +41,7 @@ def download_pdf(pdf_url, pdf_path, headers):
             ) as r:
                 r.raise_for_status()
                 content_type = (r.headers.get("Content-Type") or "").lower()
-                if "pdf" not in content_type:
+                if "pdf" not in content_type and not pdf_url.lower().endswith(".pdf"):
                     return False
 
                 fd, tmp_path = tempfile.mkstemp(
