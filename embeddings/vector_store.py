@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from functools import lru_cache
 from typing import Optional
 
 import chromadb
 from chromadb.config import Settings
 
-DEFAULT_CHROMA_PATH = os.getenv("CHROMA_PATH", "data/chroma")
+DEFAULT_CHROMA_PATH = os.getenv(
+    "CHROMA_PATH",
+    str(Path(__file__).resolve().parents[1] / "data" / "chroma"),
+)
 DEFAULT_COLLECTION = os.getenv("CHROMA_COLLECTION", "tender_embeddings")
 
 
