@@ -49,4 +49,3 @@ def upsert_pdf_metadata(data):
         update_data,
         upsert=True
     )
-\
