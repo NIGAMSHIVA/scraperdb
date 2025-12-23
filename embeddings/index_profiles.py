@@ -1,13 +1,15 @@
-# embeddings/index_tenders.py
+# embeddings/index_profiles.py
 
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 import os
+
+import numpy as np
 
 try:
     from embeddings.chunker import chunk_text
@@ -27,13 +29,14 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", "64"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "80"))
 
-TENDER_COLLECTION_NAME = os.getenv("TENDER_CHROMA_COLLECTION", "tender_embeddings")
+PROFILE_COLLECTION_NAME = os.getenv("PROFILE_CHROMA_COLLECTION", "profile_embeddings")
 
 mongo = MongoClient(MONGO_URI)
 db = mongo[DB_NAME]
 docling_outputs = db["docling_outputs"]
+company_profiles = db["company_profiles"]
 
-collection = get_chroma_collection(name=TENDER_COLLECTION_NAME)
+collection = get_chroma_collection(name=PROFILE_COLLECTION_NAME)
 embedder = TenderEmbedder()
 
 logger = logging.getLogger(__name__)
@@ -41,10 +44,6 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 
 def _combine_text_and_tables(doc: dict) -> str:
-    """
-    Combine text + table text (clean).
-    Prefer table['text'] when available to avoid embedding noisy metadata.
-    """
     text = doc.get("text", "") or ""
     tables = doc.get("tables", []) or []
 
@@ -54,7 +53,6 @@ def _combine_text_and_tables(doc: dict) -> str:
             if "text" in table and isinstance(table["text"], str):
                 table_texts.append(table["text"])
             else:
-                # fallback: only stringify values that look textual
                 for v in table.values():
                     if isinstance(v, str) and v.strip():
                         table_texts.append(v.strip())
@@ -62,8 +60,7 @@ def _combine_text_and_tables(doc: dict) -> str:
             if isinstance(table, str) and table.strip():
                 table_texts.append(table.strip())
 
-    combined = "\n".join([text] + table_texts).strip()
-    return combined
+    return "\n".join([text] + table_texts).strip()
 
 
 def _batch_items(items: List[str], batch_size: int) -> List[List[str]]:
@@ -72,35 +69,49 @@ def _batch_items(items: List[str], batch_size: int) -> List[List[str]]:
     return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
 
 
-def index_pending_tenders(limit: int = 10) -> None:
+def _summary_embedding(chunk_embeddings: List[List[float]]) -> List[float]:
     """
-    Index ONLY tender docs from docling_outputs into tender_embeddings Chroma collection.
+    Create a single profile embedding from chunk embeddings:
+    - average
+    - re-normalize to unit length
     """
-    if CHUNK_SIZE <= 0:
-        raise ValueError("CHUNK_SIZE must be > 0")
+    arr = np.array(chunk_embeddings, dtype=np.float32)
+    mean_vec = arr.mean(axis=0)
+    norm = np.linalg.norm(mean_vec)
+    if norm > 0:
+        mean_vec = mean_vec / norm
+    return mean_vec.tolist()
 
+
+def index_pending_profiles(limit: int = 10) -> None:
     pending = docling_outputs.find(
-        {"doc_type": "tender", "indexed": {"$ne": True}},
+        {"doc_type": "profile", "indexed": {"$ne": True}},
         limit=limit,
     )
 
     for doc in pending:
         document_id = str(doc["_id"])
-        tender_id = doc.get("tender_id")
-        tender_id_str = str(tender_id) if tender_id is not None else None
+        profile_id = doc.get("profile_id")
+        profile_id_str: Optional[str] = str(profile_id) if profile_id is not None else None
         source = doc.get("source")
+
+        if not profile_id_str:
+            logger.warning("Skipping profile doc with missing profile_id: %s", document_id)
+            continue
 
         combined_text = _combine_text_and_tables(doc)
         if not combined_text:
-            logger.warning("Skipping empty tender doc: %s", document_id)
+            logger.warning("Skipping empty profile doc: %s", document_id)
             continue
 
         chunks = chunk_text(combined_text, max_chars=CHUNK_SIZE, overlap_chars=CHUNK_OVERLAP)
         if not chunks:
-            logger.warning("No chunks created for tender doc: %s", document_id)
+            logger.warning("No chunks created for profile doc: %s", document_id)
             continue
 
-        logger.info("Indexing tender %s -> %d chunks", tender_id_str, len(chunks))
+        logger.info("Indexing profile %s -> %d chunks", profile_id_str, len(chunks))
+
+        all_embeddings: List[List[float]] = []
 
         try:
             for batch_index, batch in enumerate(_batch_items(chunks, BATCH_SIZE)):
@@ -108,14 +119,15 @@ def index_pending_tenders(limit: int = 10) -> None:
                 if len(batch_embeddings) != len(batch):
                     raise RuntimeError("Embedding count mismatch")
 
-                start_index = batch_index * BATCH_SIZE
+                all_embeddings.extend(batch_embeddings)
 
-                ids = [f"tender:{document_id}:{i}" for i in range(start_index, start_index + len(batch))]
+                start_index = batch_index * BATCH_SIZE
+                ids = [f"profile:{document_id}:{i}" for i in range(start_index, start_index + len(batch))]
 
                 metadatas = [
                     {
-                        "doc_type": "tender",
-                        "tender_id": tender_id_str,
+                        "doc_type": "profile",
+                        "profile_id": profile_id_str,
                         "document_id": document_id,
                         "chunk_index": i,
                         "source": source,
@@ -128,6 +140,7 @@ def index_pending_tenders(limit: int = 10) -> None:
 
                 collection.upsert(ids=ids, documents=batch, embeddings=batch_embeddings, metadatas=metadatas)
 
+            # Update docling_outputs
             docling_outputs.update_one(
                 {"_id": doc["_id"]},
                 {
@@ -141,7 +154,22 @@ def index_pending_tenders(limit: int = 10) -> None:
                 },
             )
 
-            logger.info("Indexed tender doc successfully: %s", document_id)
+            # Store summary embedding back into company_profiles (fast query embedding)
+            summary = _summary_embedding(all_embeddings)
+            company_profiles.update_one(
+                {"_id": profile_id},
+                {
+                    "$set": {
+                        "status": "READY",
+                        "profile_embedding": summary,  # length 384
+                        "profile_chunk_count": len(chunks),
+                        "profile_embedding_model": embedder.model_name,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+
+            logger.info("Indexed profile successfully: %s", profile_id_str)
 
         except Exception as exc:
             docling_outputs.update_one(
@@ -154,11 +182,11 @@ def index_pending_tenders(limit: int = 10) -> None:
                     }
                 },
             )
-            logger.exception("Failed to index tender doc %s", document_id)
+            logger.exception("Failed to index profile doc %s", document_id)
 
 
 def main():
-    index_pending_tenders(limit=10)
+    index_pending_profiles(limit=10)
 
 
 if __name__ == "__main__":
