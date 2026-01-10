@@ -115,13 +115,17 @@ def process_pending_documents(collection_name: str, limit: int = 10):
             print("❌ Docling failed:", e)
 
 
-def main():
+def docling_process(collection_name: str, limit: int = 10) -> None:
+    process_pending_documents(collection_name=collection_name, limit=limit)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--collection", default=os.getenv("DOCS_COLLECTION", "tender_documents"))
     parser.add_argument("--limit", type=int, default=int(os.getenv("DOCLING_LIMIT", "10")))
     args = parser.parse_args()
 
-    process_pending_documents(collection_name=args.collection, limit=args.limit)
+    docling_process(collection_name=args.collection, limit=args.limit)
 
 
 if __name__ == "__main__":

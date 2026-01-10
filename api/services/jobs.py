@@ -9,6 +9,7 @@ from bson import ObjectId
 
 from api.services.mongo import get_db
 from api.services.profile_ingest import process_profile_job
+from api.services.match import process_match_job
 
 _job_queue: "queue.Queue[str]" = queue.Queue()
 _worker_started = False
@@ -30,7 +31,27 @@ def _worker_loop():
     while True:
         job_id = _job_queue.get()
         try:
-            process_profile_job(job_id)
+            db = get_db()
+            jobs = db["jobs"]
+            job = jobs.find_one({"_id": ObjectId(job_id)})
+            job_type = (job or {}).get("type", "profile_ingest")
+
+            if job_type == "match_search":
+                process_match_job(job_id)
+            elif job_type == "profile_ingest":
+                process_profile_job(job_id)
+            else:
+                jobs.update_one(
+                    {"_id": ObjectId(job_id)},
+                    {
+                        "$set": {
+                            "status": "failed",
+                            "step": "error",
+                            "error": f"Unknown job type: {job_type}",
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    },
+                )
         except Exception as exc:
             # Last-resort job failure update
             db = get_db()

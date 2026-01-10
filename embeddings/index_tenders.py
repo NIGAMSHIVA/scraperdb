@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
-from typing import List
+from typing import List, Optional
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -12,11 +13,11 @@ import os
 try:
     from embeddings.chunker import chunk_text
     from embeddings.tender_embedder import TenderEmbedder
-    from embeddings.vector_store import get_chroma_collection
+    from embeddings.vector_store import get_chroma_collection, get_chroma_client
 except ModuleNotFoundError:
     from chunker import chunk_text
     from tender_embedder import TenderEmbedder
-    from vector_store import get_chroma_collection
+    from vector_store import get_chroma_collection, get_chroma_client
 
 load_dotenv()
 
@@ -32,6 +33,7 @@ TENDER_COLLECTION_NAME = os.getenv("TENDER_CHROMA_COLLECTION", "tender_embedding
 mongo = MongoClient(MONGO_URI)
 db = mongo[DB_NAME]
 docling_outputs = db["docling_outputs"]
+tender_documents = db["tender_documents"]
 
 collection = get_chroma_collection(name=TENDER_COLLECTION_NAME)
 embedder = TenderEmbedder()
@@ -79,16 +81,50 @@ def index_pending_tenders(limit: int = 10) -> None:
     if CHUNK_SIZE <= 0:
         raise ValueError("CHUNK_SIZE must be > 0")
 
-    pending = docling_outputs.find(
-        {"doc_type": "tender", "indexed": {"$ne": True}},
-        limit=limit,
-    )
+    query = {"doc_type": "tender", "indexed": {"$ne": True}}
+    if limit and limit > 0:
+        pending = docling_outputs.find(query, limit=limit)
+    else:
+        pending = docling_outputs.find(query)
 
     for doc in pending:
-        document_id = str(doc["_id"])
+        document_oid = doc.get("document_id") or doc.get("_id")
+        document_id = str(document_oid)
         tender_id = doc.get("tender_id")
         tender_id_str = str(tender_id) if tender_id is not None else None
         source = doc.get("source")
+
+        tender_doc = tender_documents.find_one({"_id": document_oid})
+        if not tender_doc:
+            docling_outputs.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "indexed": True,
+                        "index_status": "skipped",
+                        "index_error": "tender_document_missing",
+                        "indexed_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+            logger.info("Skipping expired/missing tender doc: %s", document_id)
+            continue
+
+        expires_at = tender_doc.get("expires_at")
+        if expires_at and expires_at <= datetime.utcnow():
+            docling_outputs.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "indexed": True,
+                        "index_status": "skipped",
+                        "index_error": "tender_document_expired",
+                        "indexed_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+            logger.info("Skipping expired tender doc: %s", document_id)
+            continue
 
         combined_text = _combine_text_and_tables(doc)
         if not combined_text:
@@ -157,8 +193,40 @@ def index_pending_tenders(limit: int = 10) -> None:
             logger.exception("Failed to index tender doc %s", document_id)
 
 
-def main():
-    index_pending_tenders(limit=10)
+def _reset_collection() -> None:
+    global collection
+    client = get_chroma_client()
+    try:
+        client.delete_collection(name=TENDER_COLLECTION_NAME)
+    except Exception:
+        pass
+    collection = get_chroma_collection(name=TENDER_COLLECTION_NAME)
+
+
+def rebuild_tenders(limit: Optional[int] = None) -> None:
+    _reset_collection()
+    docling_outputs.update_many(
+        {"doc_type": "tender"},
+        {"$set": {"indexed": False, "index_status": "rebuild"}},
+    )
+    index_pending_tenders(limit=limit or 0)
+
+
+def index_tenders(limit: int = 10) -> None:
+    index_pending_tenders(limit=limit)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--rebuild", action="store_true")
+    args = parser.parse_args()
+
+    if args.rebuild:
+        rebuild_tenders(limit=args.limit)
+        return
+
+    index_tenders(limit=args.limit)
 
 
 if __name__ == "__main__":
