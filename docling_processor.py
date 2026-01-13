@@ -57,7 +57,7 @@ def process_pending_documents(collection_name: str, limit: int = 10):
         pdf_path = doc.get("local_path")
 
         if not pdf_path:
-            print(f"❌ Missing local_path for document_id={document_id}")
+            print(f" Missing local_path for document_id={document_id}")
             documents.update_one({"_id": document_id}, {"$set": {"docling_status": "failed"}})
             continue
 

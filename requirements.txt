@@ -5,5 +5,10 @@ pymongo
 python-dotenv
 playwright
 docling
+FastAPI
+ pydantic
+ bson
+ sentence-transformers
+ chromadb
 
 
