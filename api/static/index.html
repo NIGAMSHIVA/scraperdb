@@ -230,7 +230,7 @@
         <span class="pill">Tender + Profile Match</span>
         <h1>Upload once. Find the best tenders fast.</h1>
         <p>
-          Drop a company profile PDF, add an optional query, and we will build embeddings,
+          Drop a company profile PDF (or multiple PDFs), add an optional query, and we will build embeddings,
           search tenders, and return ranked results with evidence.
         </p>
       </section>
@@ -239,8 +239,8 @@
         <form id="match-form">
           <div class="grid">
             <div>
-              <label for="profile_pdf">Profile PDF</label>
-              <input id="profile_pdf" name="profile_pdf" type="file" accept="application/pdf" required />
+              <label for="profile_pdf">Profile PDF(s)</label>
+              <input id="profile_pdf" name="profile_pdf" type="file" accept="application/pdf" multiple required />
             </div>
             <div>
               <label for="query">Query (optional)</label>
@@ -319,7 +319,7 @@
         });
       }
 
-      async function pollJob(jobId) {
+      async function pollMatchJob(jobId) {
         setStatus(`Processing job ${jobId}...`);
         const res = await fetch(`/jobs/${jobId}`);
         if (!res.ok) {
@@ -339,7 +339,129 @@
           return;
         }
         setStatus(`Working... ${data.progress ?? 0}%`);
-        setTimeout(() => pollJob(jobId), 1500);
+        setTimeout(() => pollMatchJob(jobId), 1500);
+      }
+
+      function buildSearchParams() {
+        const params = new URLSearchParams();
+        const query = document.getElementById("query").value.trim();
+        const topK = document.getElementById("top_k").value.trim();
+        const location = document.getElementById("location").value.trim();
+        const dept = document.getElementById("dept").value.trim();
+        const deadline = document.getElementById("deadline").value.trim();
+
+        if (query) {
+          params.set("query", query);
+        }
+        if (topK) {
+          params.set("top_k", topK);
+        }
+        if (location) {
+          params.set("location", location);
+        }
+        if (dept) {
+          params.set("dept", dept);
+        }
+        if (deadline) {
+          params.set("deadline", deadline);
+        }
+        return params.toString();
+      }
+
+      async function runProfileSearch(profileId, searchParams) {
+        const url = `/profiles/${profileId}/search${searchParams ? `?${searchParams}` : ""}`;
+        const res = await fetch(url, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus(data.detail || "Profile search failed.");
+          return false;
+        }
+        setStatus("Results ready.");
+        renderResults(data.results);
+        return true;
+      }
+
+      async function pollProfileJob(jobId, profileId, searchParams) {
+        setStatus(`Building profile...`);
+        const res = await fetch(`/jobs/${jobId}`);
+        if (!res.ok) {
+          setStatus("Failed to fetch job status.");
+          submitBtn.disabled = false;
+          return;
+        }
+        const data = await res.json();
+        if (data.status === "done") {
+          setStatus("Profile ready. Searching...");
+          await runProfileSearch(profileId, searchParams);
+          submitBtn.disabled = false;
+          return;
+        }
+        if (data.status === "failed") {
+          setStatus(`Job failed: ${data.error || "Unknown error"}`);
+          submitBtn.disabled = false;
+          return;
+        }
+        setStatus(`Building profile... ${data.progress ?? 0}%`);
+        setTimeout(() => pollProfileJob(jobId, profileId, searchParams), 1500);
+      }
+
+      async function runSingleMatch(formData) {
+        const res = await fetch("/search/match", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus(data.detail || "Request failed.");
+          submitBtn.disabled = false;
+          return;
+        }
+
+        if (data.mode === "sync") {
+          setStatus("Results ready.");
+          renderResults(data.results);
+          submitBtn.disabled = false;
+          return;
+        }
+
+        if (data.mode === "async") {
+          pollMatchJob(data.job_id);
+          return;
+        }
+
+        setStatus("Unexpected response.");
+        submitBtn.disabled = false;
+      }
+
+      async function runMultiProfile(files, searchParams) {
+        setStatus("Creating profile...");
+        const profileRes = await fetch("/profiles", { method: "POST" });
+        const profileData = await profileRes.json();
+        if (!profileRes.ok) {
+          setStatus(profileData.detail || "Failed to create profile.");
+          submitBtn.disabled = false;
+          return;
+        }
+
+        const profileId = profileData.profile_id;
+        const uploadData = new FormData();
+        files.forEach((file) => {
+          uploadData.append("pdfs", file);
+        });
+
+        setStatus(`Uploading ${files.length} PDF${files.length > 1 ? "s" : ""}...`);
+        const uploadRes = await fetch(`/profiles/${profileId}/documents`, {
+          method: "POST",
+          body: uploadData,
+        });
+        const uploadResult = await uploadRes.json();
+        if (!uploadRes.ok) {
+          setStatus(uploadResult.detail || "Upload failed.");
+          submitBtn.disabled = false;
+          return;
+        }
+
+        pollProfileJob(uploadResult.job_id, profileId, searchParams);
       }
 
       form.addEventListener("submit", async (event) => {
@@ -348,34 +470,23 @@
         setStatus("Uploading profile...");
         resultsEl.innerHTML = "";
 
-        const formData = new FormData(form);
+        const fileInput = document.getElementById("profile_pdf");
+        const files = Array.from(fileInput.files || []);
+        if (files.length === 0) {
+          setStatus("Please select at least one PDF.");
+          submitBtn.disabled = false;
+          return;
+        }
 
         try {
-          const res = await fetch("/search/match", {
-            method: "POST",
-            body: formData,
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            setStatus(data.detail || "Request failed.");
-            submitBtn.disabled = false;
+          if (files.length === 1) {
+            const formData = new FormData(form);
+            await runSingleMatch(formData);
             return;
           }
 
-          if (data.mode === "sync") {
-            setStatus("Results ready.");
-            renderResults(data.results);
-            submitBtn.disabled = false;
-            return;
-          }
-
-          if (data.mode === "async") {
-            pollJob(data.job_id);
-            return;
-          }
-
-          setStatus("Unexpected response.");
-          submitBtn.disabled = false;
+          const searchParams = buildSearchParams();
+          await runMultiProfile(files, searchParams);
         } catch (err) {
           setStatus("Network error.");
           submitBtn.disabled = false;
