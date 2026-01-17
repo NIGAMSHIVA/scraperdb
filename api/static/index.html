@@ -402,7 +402,7 @@
           return;
         }
         setStatus(`Building profile... ${data.progress ?? 0}%`);
-        setTimeout(() => pollProfileJob(jobId, profileId, searchParams), 1500);
+        setTimeout(() =>  ProfileJob(jobId, profileId, searchParams), 1500);
       }
 
       async function runSingleMatch(formData) {

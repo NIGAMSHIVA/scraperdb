@@ -7,8 +7,8 @@ playwright
 docling
 FastAPI
  pydantic
- bson
- sentence-transformers
- chromadb
+sentence-transformers
+chromadb
+FlagEmbedding
 
 
